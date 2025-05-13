@@ -1501,35 +1501,36 @@ class HFLM(TemplateLM):
                 )
             else:
                 # Two-stage generation with thinking
+                # Stage 1: Generate thinking tokens in batch mode
+                stage1_kwargs = copy.deepcopy(kwargs)
+                if "max_length" not in stage1_kwargs:
+                    stage1_kwargs["max_length"] = context_enc.shape[1] + max_gen_length_stage1
+
+                # First stage generation (thinking) - fully batched
+                stage1_output = self._model_generate(
+                    context=context_enc,
+                    attention_mask=attn_masks,
+                    stop=until,
+                    **stage1_kwargs,
+                )
+
+                # Tokenize the unthink string (without special tokens) - once for all items
+                unthink_tokens = self.tokenizer.encode(
+                    unthink_string,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                ).to(self.device)
+
+                # For stage 2, we need to process each item individually
+                # because each may have generated different lengths in stage 1
                 batch_outputs = []
 
                 for i in range(context_enc.shape[0]):
-                    # Get the single context for this item
-                    single_context = context_enc[i:i+1]  # Keep batch dimension
-                    single_mask = None if attn_masks is None else attn_masks[i:i+1]
+                    # Get this item's stage 1 output
+                    single_stage1_output = stage1_output[i:i+1]  # Keep batch dimension [1, seq_len]
 
-                    # Stage 1: Generate thinking
-                    stage1_kwargs = copy.deepcopy(kwargs)
-                    if "max_length" not in stage1_kwargs:
-                        stage1_kwargs["max_length"] = single_context.shape[1] + max_gen_length_stage1
-
-                    # First stage generation (thinking)
-                    stage1_output = self._model_generate(
-                        context=single_context,
-                        attention_mask=single_mask,
-                        stop=until,
-                        **stage1_kwargs,
-                    )
-
-                    # Tokenize the unthink string (without special tokens)
-                    unthink_tokens = self.tokenizer.encode(
-                        unthink_string,
-                        add_special_tokens=False,
-                        return_tensors="pt",
-                    ).to(self.device)
-
-                    # Concatenate stage1 output with unthink string
-                    stage2_input = torch.cat([stage1_output, unthink_tokens], dim=1)
+                    # Concatenate with unthink string
+                    stage2_input = torch.cat([single_stage1_output, unthink_tokens], dim=1)
 
                     # Stage 2: Generate final answer
                     stage2_kwargs = copy.deepcopy(kwargs)
