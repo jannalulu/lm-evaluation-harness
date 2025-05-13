@@ -893,7 +893,10 @@ class HFLM(TemplateLM):
                 assert self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM
                 return self.model(inps).logits
 
-    def _model_generate(self, context, max_length, stop, **generation_kwargs):
+    def _model_generate(self, context, attention_mask, max_length, stop, **generation_kwargs): # Added attention_mask
+        """
+        Helper function for HFLM.generate_until to call the underlying HF model's generate method.
+        """
         # temperature = 0.0 if not set
         # if do_sample is false and temp==0.0:
         # remove temperature, as do_sample=False takes care of this
@@ -907,14 +910,22 @@ class HFLM(TemplateLM):
 
         if do_sample is False and generation_kwargs.get("temperature") == 0.0:
             generation_kwargs.pop("temperature")
+        
         # build stopping criteria
+        # If stop is None, pass None to stop_sequences_criteria.
+        # It will default to EOS if not otherwise specified by generation_kwargs.
         stopping_criteria = stop_sequences_criteria(
-            self.tokenizer, stop, context.shape[1], context.shape[0]
+            self.tokenizer, stop if stop is not None else [], context.shape[1], context.shape[0]
         )
+        if not stopping_criteria: # If stop was None or empty and resulted in empty list
+            stopping_criteria = None
+
+
         return self.model.generate(
             input_ids=context,
+            attention_mask=attention_mask,
             max_length=max_length,
-            stopping_criteria=stopping_criteria,
+            stopping_criteria=stopping_criteria if stopping_criteria else transformers.StoppingCriteriaList(),
             pad_token_id=self.tokenizer.pad_token_id,
             use_cache=True,
             **generation_kwargs,
@@ -1296,10 +1307,9 @@ class HFLM(TemplateLM):
         )
         adaptive_batch_size = None
         if self.batch_size == "auto":
-            # using rolling window with maximum context
-            print("Passed argument batch_size = auto. Detecting largest batch size")
+            eval_logger.info("Passed argument batch_size = auto. Detecting largest batch size")
             batch_size = self._detect_batch_size()
-            print(f"Determined Largest batch size: {batch_size}")
+            eval_logger.info(f"Determined Largest batch size: {batch_size}")
             adaptive_batch_size = batch_size
         # for each different set of kwargs, we execute all requests, by batch.
         batch_size = (
@@ -1329,78 +1339,149 @@ class HFLM(TemplateLM):
         eos = self.tok_decode(self.eot_token_id, skip_special_tokens=False)
         for chunk in chunks:
             contexts, all_gen_kwargs = zip(*chunk)
-            # we assume all gen kwargs in the batch are the same
-            # this is safe to assume because the `grouper` object ensures it.
             gen_kwargs = all_gen_kwargs[0]
-            # unpack our keyword arguments.
-            if isinstance(gen_kwargs, dict):
-                kwargs = copy.deepcopy(gen_kwargs)  # edge case for repeats > 1
-                # add EOS token to stop sequences
-                until = handle_stop_sequences(kwargs.pop("until", None), eos=eos)
-            else:
-                raise ValueError(
-                    f"Expected `kwargs` to be of type `dict` but got {type(gen_kwargs)}"
-                )
-            if "max_gen_toks" in kwargs.keys():
-                max_gen_toks = kwargs.pop("max_gen_toks")
-            else:
-                max_gen_toks = self.max_gen_toks
+            
+            current_kwargs = copy.deepcopy(gen_kwargs) if isinstance(gen_kwargs, dict) else {}
+            user_provided_stop_sequences = handle_stop_sequences(current_kwargs.pop("until", None), eos=eos)
 
-            # set the max length in tokens of inputs ("context_enc")
-            if self.backend == "causal":
-                # max len for inputs = max length, minus room to generate the max new tokens
+            # Parameters for two-stage generation
+            unthink_string = current_kwargs.pop("unthink_string", None)
+            max_gen_length_stage1 = current_kwargs.pop("max_gen_length_stage1", None)
+            extra_tokens_after_unthink = current_kwargs.pop("extra_tokens_after_unthink", None)
+
+            # This will be the attention mask of the input to the *first* generation stage,
+            # used for stripping the prompt from the final output.
+            first_stage_input_attn_mask = None
+            final_generated_ids = None # To store output from the last generation stage
+
+            if unthink_string is not None:
+                # --- Two-Stage Generation ---
+                if max_gen_length_stage1 is None or extra_tokens_after_unthink is None:
+                    raise ValueError(
+                        "If 'unthink_string' is provided, 'max_gen_length_stage1' and "
+                        "'extra_tokens_after_unthink' must also be provided in gen_kwargs."
+                    )
+
+                # Stage 1 Generation
+                # Max input length for stage 1: self.max_length - max_gen_length_stage1
+                # (or full length for encoder in seq2seq)
+                max_ctx_len_s1 = self.max_length - max_gen_length_stage1
+                if self.backend == "seq2seq":
+                    max_ctx_len_s1 = self.max_length
+                
+                if max_ctx_len_s1 <= 0:
+                    raise ValueError(f"Calculated max_ctx_len_s1 ({max_ctx_len_s1}) is not positive. Check max_length ({self.max_length}) and max_gen_length_stage1 ({max_gen_length_stage1}).")
+
+
+                context_enc_s1, attn_mask_s1 = self.tok_batch_encode(
+                    contexts,
+                    left_truncate_len=max_ctx_len_s1,
+                    truncation=self.truncation,
+                )
+                context_enc_s1 = context_enc_s1.to(self.device)
+                attn_mask_s1 = attn_mask_s1.to(self.device)
+                first_stage_input_attn_mask = attn_mask_s1 # Save for final stripping
+
+                s1_kwargs = current_kwargs.copy()
+                # For stage 1, use only basic stopping (EOS), not user_provided_stop_sequences
+                # _model_generate will add EOS by default if stop=None.
+                # If tokenizer has no EOS, or to be very explicit, one could pass [self.tok_decode(self.eot_token_id)]
+                # For simplicity, we assume _model_generate handles EOS if stop=None.
+                generated_ids_s1_full = self._model_generate(
+                    context=context_enc_s1,
+                    attention_mask=attn_mask_s1,
+                    max_length=context_enc_s1.shape[1] + max_gen_length_stage1,
+                    stop=None, # Stage 1 only stops on EOS or length
+                    **s1_kwargs,
+                )
+
+                # Prepare for Stage 2
+                unthink_tokens = self.tokenizer.encode(
+                    unthink_string, add_special_tokens=False, return_tensors='pt'
+                ).to(self.device)
+                
+                if unthink_tokens.shape[0] != 1: # Ensure it's [1, num_toks]
+                    unthink_tokens = unthink_tokens.unsqueeze(0) if len(unthink_tokens.shape) == 1 else unthink_tokens
+
+                unthink_tokens_batch_s2 = unthink_tokens.repeat(generated_ids_s1_full.shape[0], 1)
+                
+                input_ids_s2 = torch.cat([generated_ids_s1_full, unthink_tokens_batch_s2], dim=-1)
+                
+                attn_mask_s1_part = (generated_ids_s1_full != self.tokenizer.pad_token_id)
+                attn_mask_unthink_part = torch.ones_like(unthink_tokens_batch_s2, device=self.device, dtype=torch.bool)
+                attn_mask_s2 = torch.cat([attn_mask_s1_part, attn_mask_unthink_part], dim=-1)
+
+                # Stage 2 Generation
+                s2_kwargs = current_kwargs.copy()
+                final_generated_ids = self._model_generate(
+                    context=input_ids_s2,
+                    attention_mask=attn_mask_s2,
+                    max_length=input_ids_s2.shape[1] + extra_tokens_after_unthink,
+                    stop=user_provided_stop_sequences, # Apply full stopping criteria here
+                    **s2_kwargs,
+                )
+
+            else:
+                max_gen_toks = current_kwargs.pop("max_gen_toks", self.max_gen_toks)
+                
                 max_ctx_len = self.max_length - max_gen_toks
-                assert max_ctx_len > 0, (
-                    f"Invalid configuration: requested max tokens to generate ({max_gen_toks}) must be less than model's maximum sequence length ({self.max_length})."
+                if self.backend == "seq2seq":
+                    max_ctx_len = self.max_length
+                
+                if max_ctx_len <= 0:
+                     raise ValueError(f"Calculated max_ctx_len ({max_ctx_len}) is not positive. Check max_length ({self.max_length}) and max_gen_toks ({max_gen_toks}).")
+
+
+                context_enc, attn_masks = self.tok_batch_encode(
+                    contexts,
+                    left_truncate_len=max_ctx_len,
+                    truncation=self.truncation,
                 )
-            elif self.backend == "seq2seq":
-                # max len for inputs = encoder's whole max_length
-                max_ctx_len = self.max_length
+                context_enc = context_enc.to(self.device)
+                attn_masks = attn_masks.to(self.device)
+                first_stage_input_attn_mask = attn_masks # Save for final stripping
+                
+                final_generated_ids = self._model_generate(
+                    context=context_enc,
+                    attention_mask=attn_masks,
+                    max_length=context_enc.shape[1] + max_gen_toks,
+                    stop=user_provided_stop_sequences,
+                    **current_kwargs,
+                )
 
-            # encode, pad, and truncate contexts for this batch
-            context_enc, attn_masks = self.tok_batch_encode(
-                contexts,
-                left_truncate_len=max_ctx_len,
-                truncation=self.truncation,
-            )
-            context_enc = context_enc.to(self.device)
-            attn_masks = attn_masks.to(self.device)
+            # Decoding and Stripping (common to both paths)
+            # `first_stage_input_attn_mask` refers to the attention mask of the very first prompt input.
+            prompt_lengths = first_stage_input_attn_mask.sum(dim=1) # Get true length of each prompt
+            
+            generated_toks_list = final_generated_ids.tolist()
 
-            if "max_length" not in kwargs:
-                kwargs["max_length"] = context_enc.shape[1] + max_gen_toks
+            for i, full_toks_for_item in enumerate(generated_toks_list):
+                current_prompt_len = prompt_lengths[i].item()
+                
+                # Strip the prompt part
+                if len(full_toks_for_item) < current_prompt_len:
+                    eval_logger.warning(
+                        f"Generated sequence for item {i} (length {len(full_toks_for_item)}) is shorter than its prompt (length {current_prompt_len}). "
+                        "This might happen if the prompt itself is truncated or an early EOS is generated. "
+                        "Returning empty string for the completion."
+                    )
+                    completion_toks = []
+                else:
+                    completion_toks = full_toks_for_item[current_prompt_len:]
+                
+                s = self.tok_decode(completion_toks)
 
-            # perform batched generation
-            cont = self._model_generate(
-                context=context_enc,
-                attention_mask=attn_masks,
-                stop=until,
-                **kwargs,
-            )
-
-            cont_toks_list = cont.tolist()
-            for cont_toks, context in zip(cont_toks_list, contexts):
-                # discard context + left-padding toks if using causal decoder-only LM
-                if self.backend == "causal":
-                    cont_toks = cont_toks[context_enc.shape[1] :]
-
-                s = self.tok_decode(cont_toks)
-
-                # use secondary stop seqs to cut off should-have-been-stopped content post-hoc
-                for term in until:
-                    if len(term) > 0:
-                        # ignore '' separator,
-                        # for seq2seq case where self.tok_decode(self.eot_token_id) = ''
+                # Post-hoc stop sequence handling
+                for term in user_provided_stop_sequences:
+                    if len(term) > 0: # Make sure term is not empty
                         s = s.split(term)[0]
-
+                
                 res.append(s)
-
-                self.cache_hook.add_partial("generate_until", (context, gen_kwargs), s)
+                self.cache_hook.add_partial("generate_until", (contexts[i], gen_kwargs), s)
                 pbar.update(1)
-        # reorder this group of results back to original unsorted form
+        
         res = re_ords.get_original(res)
-
         pbar.close()
-
         return res
 
     def apply_chat_template(
