@@ -93,6 +93,11 @@ class HFLM(TemplateLM):
         autogptq: Optional[Union[bool, str]] = False,
         gptqmodel: Optional[bool] = False,
         gguf_file: Optional[str] = None,
+        # Two-stage generation arguments (thinking mode)
+        enable_thinking: bool = False,
+        max_gen_length_stage1: Optional[int] = None,
+        unthink_string: Optional[str] = None,
+        extra_tokens_after_unthink: Optional[int] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -300,6 +305,27 @@ class HFLM(TemplateLM):
             eval_logger.info(
                 f"Loglikelihood prefix token id used in evaluation: {self.prefix_token_id}"
             )
+
+        # Store two-stage generation parameters
+        self.enable_thinking = enable_thinking
+        self.max_gen_length_stage1 = max_gen_length_stage1
+        self.unthink_string = unthink_string
+        self.extra_tokens_after_unthink = extra_tokens_after_unthink
+
+        # Log if thinking mode is enabled
+        if self.enable_thinking:
+            if all([self.max_gen_length_stage1, self.unthink_string, self.extra_tokens_after_unthink]):
+                eval_logger.info(
+                    f"Two-stage generation (thinking mode) is enabled with:\n"
+                    f"  max_gen_length_stage1: {self.max_gen_length_stage1}\n"
+                    f"  unthink_string: '{self.unthink_string}'\n"
+                    f"  extra_tokens_after_unthink: {self.extra_tokens_after_unthink}"
+                )
+            else:
+                eval_logger.warning(
+                    "Two-stage generation (thinking mode) was requested but missing required parameters. "
+                    "Required: max_gen_length_stage1, unthink_string, extra_tokens_after_unthink."
+                )
 
     def _get_accelerate_args(
         self,
@@ -907,18 +933,81 @@ class HFLM(TemplateLM):
 
         if do_sample is False and generation_kwargs.get("temperature") == 0.0:
             generation_kwargs.pop("temperature")
-        # build stopping criteria
-        stopping_criteria = stop_sequences_criteria(
-            self.tokenizer, stop, context.shape[1], context.shape[0]
-        )
-        return self.model.generate(
-            input_ids=context,
-            max_length=max_length,
-            stopping_criteria=stopping_criteria,
-            pad_token_id=self.tokenizer.pad_token_id,
-            use_cache=True,
-            **generation_kwargs,
-        )
+
+        # Check for two-stage generation parameters
+        two_stage = generation_kwargs.pop("two_stage", False)
+        if two_stage:
+            # Extract two-stage specific parameters with defaults
+            stage1_max_length = generation_kwargs.pop("stage1_max_length", None)
+            stage1_stop = generation_kwargs.pop("stage1_stop", None)
+            stage1_kwargs = generation_kwargs.pop("stage1_kwargs", {})
+            stage2_kwargs = generation_kwargs.pop("stage2_kwargs", {})
+            stage2_context_window = generation_kwargs.pop("stage2_context_window", None)
+
+            # Apply stage1_kwargs while preserving higher-level kwargs
+            stage1_gen_kwargs = generation_kwargs.copy()
+            stage1_gen_kwargs.update(stage1_kwargs)
+
+            # First stage generation
+            stage1_stopping_criteria = stop_sequences_criteria(
+                self.tokenizer,
+                stage1_stop if stage1_stop is not None else stop,
+                context.shape[1],
+                context.shape[0]
+            )
+
+            # Use provided stage1_max_length or fallback to max_length
+            stage1_max_len = stage1_max_length if stage1_max_length is not None else max_length
+
+            # Perform stage 1 generation
+            stage1_output = self.model.generate(
+                input_ids=context,
+                max_length=stage1_max_len,
+                stopping_criteria=stage1_stopping_criteria,
+                pad_token_id=self.tokenizer.pad_token_id,
+                use_cache=True,
+                **stage1_gen_kwargs,
+            )
+
+            # Prepare context for stage 2
+            if stage2_context_window is not None:
+                # If a specific window size is provided, take the last N tokens
+                stage2_context = stage1_output[:, -stage2_context_window:]
+            else:
+                # Otherwise use the full output from stage 1
+                stage2_context = stage1_output
+
+            # Apply stage2_kwargs while preserving higher-level kwargs
+            stage2_gen_kwargs = generation_kwargs.copy()
+            stage2_gen_kwargs.update(stage2_kwargs)
+
+            # Final stage generation
+            stopping_criteria = stop_sequences_criteria(
+                self.tokenizer, stop, stage2_context.shape[1], stage2_context.shape[0]
+            )
+
+            return self.model.generate(
+                input_ids=stage2_context,
+                max_length=max_length,
+                stopping_criteria=stopping_criteria,
+                pad_token_id=self.tokenizer.pad_token_id,
+                use_cache=True,
+                **stage2_gen_kwargs,
+            )
+        else:
+            # Standard single-stage generation (unchanged)
+            # build stopping criteria
+            stopping_criteria = stop_sequences_criteria(
+                self.tokenizer, stop, context.shape[1], context.shape[0]
+            )
+            return self.model.generate(
+                input_ids=context,
+                max_length=max_length,
+                stopping_criteria=stopping_criteria,
+                pad_token_id=self.tokenizer.pad_token_id,
+                use_cache=True,
+                **generation_kwargs,
+            )
 
     def _select_cont_toks(
         self, logits: torch.Tensor, contlen: int = None, inplen: int = None
@@ -1337,6 +1426,12 @@ class HFLM(TemplateLM):
                 kwargs = copy.deepcopy(gen_kwargs)  # edge case for repeats > 1
                 # add EOS token to stop sequences
                 until = handle_stop_sequences(kwargs.pop("until", None), eos=eos)
+
+                # Handle two-stage generation specific stop sequence processing
+                if kwargs.get("two_stage", False) and "stage1_stop" in kwargs:
+                    stage1_stop = kwargs["stage1_stop"]
+                    if stage1_stop is not None:
+                        kwargs["stage1_stop"] = handle_stop_sequences(stage1_stop, eos=eos)
             else:
                 raise ValueError(
                     f"Expected `kwargs` to be of type `dict` but got {type(gen_kwargs)}"
@@ -1346,10 +1441,36 @@ class HFLM(TemplateLM):
             else:
                 max_gen_toks = self.max_gen_toks
 
+            # Check for two-stage generation parameters (thinking mode)
+            # Use instance variables as defaults, but allow overriding per call
+            enable_thinking = kwargs.pop("enable_thinking", self.enable_thinking)
+            max_gen_length_stage1 = kwargs.pop("max_gen_length_stage1", self.max_gen_length_stage1)
+            unthink_string = kwargs.pop("unthink_string", self.unthink_string)
+            extra_tokens_after_unthink = kwargs.pop("extra_tokens_after_unthink", self.extra_tokens_after_unthink)
+
+            # Validate required parameters for two-stage generation
+            if enable_thinking and not all([max_gen_length_stage1, unthink_string, extra_tokens_after_unthink]):
+                eval_logger.warning(
+                    "Two-stage generation requested (enable_thinking=True) but missing required parameters. "
+                    "Required: max_gen_length_stage1, unthink_string, extra_tokens_after_unthink. "
+                    "Falling back to standard generation."
+                )
+                enable_thinking = False
+
             # set the max length in tokens of inputs ("context_enc")
             if self.backend == "causal":
-                # max len for inputs = max length, minus room to generate the max new tokens
-                max_ctx_len = self.max_length - max_gen_toks
+                # For two-stage generation, account for possible stage1 token length
+                if kwargs.get("two_stage", False) and "stage1_max_length" in kwargs:
+                    # Ensure we leave enough room for both stages
+                    stage1_max_length = kwargs["stage1_max_length"]
+                    if stage1_max_length is not None:
+                        max_ctx_len = min(self.max_length - max_gen_toks, stage1_max_length)
+                    else:
+                        max_ctx_len = self.max_length - max_gen_toks
+                else:
+                    # max len for inputs = max length, minus room to generate the max new tokens
+                    max_ctx_len = self.max_length - max_gen_toks
+
                 assert max_ctx_len > 0, (
                     f"Invalid configuration: requested max tokens to generate ({max_gen_toks}) must be less than model's maximum sequence length ({self.max_length})."
                 )
@@ -1366,22 +1487,90 @@ class HFLM(TemplateLM):
             context_enc = context_enc.to(self.device)
             attn_masks = attn_masks.to(self.device)
 
-            if "max_length" not in kwargs:
-                kwargs["max_length"] = context_enc.shape[1] + max_gen_toks
+            # Standard generation (without thinking mode)
+            if not enable_thinking:
+                if "max_length" not in kwargs:
+                    kwargs["max_length"] = context_enc.shape[1] + max_gen_toks
 
-            # perform batched generation
-            cont = self._model_generate(
-                context=context_enc,
-                attention_mask=attn_masks,
-                stop=until,
-                **kwargs,
-            )
+                # perform regular batched generation
+                cont = self._model_generate(
+                    context=context_enc,
+                    attention_mask=attn_masks,
+                    stop=until,
+                    **kwargs,
+                )
+            else:
+                # Two-stage generation with thinking
+                batch_outputs = []
+
+                for i in range(context_enc.shape[0]):
+                    # Get the single context for this item
+                    single_context = context_enc[i:i+1]  # Keep batch dimension
+                    single_mask = None if attn_masks is None else attn_masks[i:i+1]
+
+                    # Stage 1: Generate thinking
+                    stage1_kwargs = copy.deepcopy(kwargs)
+                    if "max_length" not in stage1_kwargs:
+                        stage1_kwargs["max_length"] = single_context.shape[1] + max_gen_length_stage1
+
+                    # First stage generation (thinking)
+                    stage1_output = self._model_generate(
+                        context=single_context,
+                        attention_mask=single_mask,
+                        stop=until,
+                        **stage1_kwargs,
+                    )
+
+                    # Tokenize the unthink string (without special tokens)
+                    unthink_tokens = self.tokenizer.encode(
+                        unthink_string,
+                        add_special_tokens=False,
+                        return_tensors="pt",
+                    ).to(self.device)
+
+                    # Concatenate stage1 output with unthink string
+                    stage2_input = torch.cat([stage1_output, unthink_tokens], dim=1)
+
+                    # Stage 2: Generate final answer
+                    stage2_kwargs = copy.deepcopy(kwargs)
+                    stage2_kwargs["max_length"] = stage2_input.shape[1] + extra_tokens_after_unthink
+
+                    # Second stage generation (final answer)
+                    final_output = self._model_generate(
+                        context=stage2_input,
+                        stop=until,
+                        **stage2_kwargs,
+                    )
+
+                    batch_outputs.append(final_output[0])  # Store the individual results
+
+                # Create a tensor with the same shape as what _model_generate would return
+                cont = torch.stack(batch_outputs, dim=0)
 
             cont_toks_list = cont.tolist()
             for cont_toks, context in zip(cont_toks_list, contexts):
                 # discard context + left-padding toks if using causal decoder-only LM
                 if self.backend == "causal":
-                    cont_toks = cont_toks[context_enc.shape[1] :]
+                    # Note: for two-stage generation, we already have the correct continuation
+                    # since stage2_context was used directly for the final generation
+                    if kwargs.get("two_stage", False):
+                        # For two-stage, we need to handle the tokenization boundary correctly
+                        if kwargs.get("stage2_context_window") is not None:
+                            # If a specific window was used, we only discard that window's prefix
+                            ctx_len = min(kwargs.get("stage2_context_window", 0), context_enc.shape[1])
+                            cont_toks = cont_toks[ctx_len:]
+                        else:
+                            # Otherwise, we discard the entire original context
+                            # (which was included in stage1 output)
+                            cont_toks = cont_toks[context_enc.shape[1]:]
+                    elif enable_thinking:
+                        # For thinking mode, we need special handling
+                        # The full output already includes both the thinking and final answer
+                        # We only need to discard the original context tokens
+                        cont_toks = cont_toks[context_enc.shape[1]:]
+                    else:
+                        # Default behavior for single-stage generation
+                        cont_toks = cont_toks[context_enc.shape[1]:]
 
                 s = self.tok_decode(cont_toks)
 
