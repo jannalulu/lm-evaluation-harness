@@ -110,16 +110,25 @@ def load_dataset(
         raise
 
 
-def load_babilong(**kwargs):
-    """Load babilong dataset for a specific qa split and context length."""
-    dataset_path = kwargs.get("dataset_path", "RMT-team/babilong")
-    test_split = kwargs.get("test_split")  # Get from YAML file
-    config_name = kwargs.get("config_name", "4k")  # Default to 4k context
-
-    if not test_split:
-        raise ValueError("test_split must be specified")
-
-    return load_dataset(dataset_path, config_name, test_split)
+def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
+    """Add context length metadata to each document."""
+    def _process_doc(doc: dict) -> dict:
+        # Debug: Print available fields
+        print(f"Fields in doc: {list(doc.keys())}")
+        print(f"Doc content: {doc}")
+        
+        # The config name should be available in the dataset info
+        config_name = getattr(dataset, 'config_name', '4k')
+        context_tokens = CONTEXT_LENGTH_MAPPING.get(config_name, 4096)
+        
+        out_doc = dict(doc)
+        out_doc["max_length"] = context_tokens
+        out_doc["config_name"] = config_name
+        
+        print(f"Output doc fields: {list(out_doc.keys())}")
+        return out_doc
+    
+    return dataset.map(_process_doc)
 
 
 def load_babilong_1k(**kwargs):
@@ -132,24 +141,10 @@ def load_babilong_1k(**kwargs):
 
 
 def process_results(doc: dict, results: list[str]) -> dict[str, float]:
-    # hacky: set all other lengths to -1
-    metrics = {str(length): -1.0 for length in DEFAULT_SEQ_LENGTHS}
-    input_len = doc["max_length"]
     pred = postprocess_pred(results)
-
-    # Get the target answer
     target = doc.get("target", "").strip()
-
-    # Simple exact match evaluation
-    score = 1.0 if pred[0].strip().lower() == target.lower() else 0.0
-
-    metrics[str(input_len)] = score
-    return metrics
-
-
-def aggregate_metrics(metrics: list[float]) -> float:
-    res = [x for x in metrics if x != -1]
-    if not res:
-        # we don't have any samples with this length
-        return -1
-    return sum(res) / len(res)
+    
+    # String match
+    score = 1.0 if target.lower() in pred[0].lower() else 0.0
+    
+    return {"acc": score}
