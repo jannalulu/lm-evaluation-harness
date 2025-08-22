@@ -2,9 +2,9 @@ tag:
   - longcxt
 dataset_path: RMT-team/babilong
 output_type: generate_until
-doc_to_text: "{{input}}"
 doc_to_target: "{{target}}"
 target_delimiter: " "
+num_fewshot: 2
 process_results: !function common_utils.process_results
 metric_list:
   - metric: "0"
@@ -46,6 +46,7 @@ metric_list:
 generation_kwargs:
   do_sample: false
   temperature: 0.0
+  max_gen_toks: 32
   until: []
 metadata:
   version: 0.0
