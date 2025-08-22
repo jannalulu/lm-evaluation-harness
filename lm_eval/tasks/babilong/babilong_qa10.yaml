@@ -1,0 +1,4 @@
+include: _babilong_common_yaml
+task: babilong_qa10
+test_split: qa10
+custom_dataset: !function common_utils.load_babilong
