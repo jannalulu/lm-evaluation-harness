@@ -42,15 +42,33 @@ The benchmark includes 20 reasoning tasks at various context lengths:
 * `babilong_qa8`: Lists and sets
 * `babilong_qa9`: Simple negation
 * `babilong_qa10`: Indefinite knowledge
-* `babilong_qa11`:
-* `babilong_qa12`:
-* `babilong_qa13`:
-* `babilong_qa14`:
-* `babilong_qa15`:
-* `babilong_qa16`:
-* `babilong_qa17`:
-* `babilong_qa18`:
-* `babilong_qa19`:
-* `babilong_qa20`:
+* `babilong_qa11`: Track person through temporal references
+* `babilong_qa12`: Conjunction
+* `babilong_qa13`: Compound coreference
+* `babilong_qa14`: Time reasoning
+* `babilong_qa15`: Basic deduction 
+* `babilong_qa16`: Basic induction
+* `babilong_qa17`: Positional reasoning
+* `babilong_qa18`: Size reasoning
+* `babilong_qa19`: Path finding
+* `babilong_qa20`: Motivation deduction
 
-Evaluation sets are in 100 samples and 1000 samples per task and per length, at 0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512k, 1M and 10M tokens. (Note: the 1k dataset only has up to 128k context lengths)
+> [!NOTE]
+> When using babilong tasks, please note:
+> 1. This is the implementation with 100 samples per length. Supported lengths are 0k, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512k, 1M and 10M tokens.
+> 2. The default maximum sequence length is 0k. For calculating metrics of different max seq lengths, specify additional lengths using the metadata parameter:
+>   `--metadata '{"config_name":"0k,1k,2k,4k"}'`. The metadata parameter can also be passed to the TaskManager (metadata: dict).
+
+
+### Checklist
+
+For adding novel benchmarks/datasets to the library:
+* [x] Is the task an existing benchmark in the literature?
+  * [x] Have you referenced the original paper that introduced the task?
+  * [ ] If yes, does the original paper provide a reference implementation? If so, have you checked against the reference implementation and documented how to run such a test?
+
+
+If other tasks on this dataset are already supported:
+* [ ] Is the "Main" variant of this task clearly denoted?
+* [ ] Have you provided a short sentence in a README on what each new variant adds / evaluates?
+* [ ] Have you noted which, if any, published evaluation setups are matched by this variant?
