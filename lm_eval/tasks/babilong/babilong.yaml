@@ -1,4 +1,4 @@
-group: babilong_all
+group: babilong
 task:
   - babilong_qa1
   - babilong_qa2
@@ -20,5 +20,8 @@ task:
   - babilong_qa18
   - babilong_qa19
   - babilong_qa20
+aggregate_metric_list:
+  - metric: acc
+    weight_by_size: True
 metadata:
   version: 0.0
