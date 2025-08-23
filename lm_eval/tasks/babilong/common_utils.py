@@ -38,21 +38,27 @@ def postprocess_pred(prediction: list[str]) -> list[str]:
 
 
 def load_dataset(**kwargs):
-    # Get qa split from task config, default to qa1
-    qa_split = kwargs.get("qa_split", "qa1")
-
     # Get config name from metadata, default to "0k"
     config_name = kwargs.get("config_name", "0k")
 
     eval_logger.info(
-        f"Loading babilong dataset: config={config_name}, split={qa_split}"
+        f"Loading babilong dataset: config={config_name}"
     )
 
-    # Load the dataset and return it as a dict with the split name as key
-    dataset = datasets.load_dataset(
-        "RMT-team/babilong", name=config_name, split=qa_split
-    )
-    return {qa_split: dataset}
+    # Load all qa splits and return as dict - task system will pick the right one
+    qa_splits = [f"qa{i}" for i in range(1, 21)]
+    dataset_dict = {}
+    
+    for qa_split in qa_splits:
+        try:
+            dataset = datasets.load_dataset(
+                "RMT-team/babilong", name=config_name, split=qa_split
+            )
+            dataset_dict[qa_split] = dataset
+        except Exception as e:
+            eval_logger.warning(f"Failed to load {qa_split}: {e}")
+            
+    return dataset_dict
 
 
 def process_results(doc: dict, results: list[str]) -> dict[str, float]:
