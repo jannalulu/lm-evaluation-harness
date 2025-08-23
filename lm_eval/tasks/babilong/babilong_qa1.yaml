@@ -1,8 +1,7 @@
 include: _babilong_common_yaml
 task: babilong_qa1
-dataset_name: "0k"
 test_split: qa1
-process_docs: !function common_utils.process_docs
+custom_dataset: !function common_utils.load_dataset
 description: "I will give you context with the facts about positions of different persons hidden in some random text and a question. You need to answer the question based only on the information from the facts. If a person was in different locations, use the latest location to answer the question.\nAlways return your answer in the following format:\nThe most recent location of 'person' is 'location'. Do not write anything else after that.\n\n"
 doc_to_text: "{{input.strip()}}\n{{question.strip()}}"
 
