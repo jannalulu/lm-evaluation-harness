@@ -55,8 +55,9 @@ The benchmark includes 20 reasoning tasks at various context lengths:
 
 > [!NOTE]
 > When using babilong tasks, please note:
-> 1. This is the implementation with 100 samples per length. Supported lengths are 0k, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512k, 1M and 10M tokens.
-> 2. The default maximum sequence length is 0k. For calculating metrics of different max seq lengths, specify additional lengths using the metadata parameter:
+> 1. This is the implementation with 100 samples per length. 
+> 2. Supported lengths are 0k, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512k, and 1M tokens for tasks qa1-10. Tasks qa1-5 have a 10M context length dataset as well. Tasks qa11-20 only have a length of 0k.
+> 3. The default maximum sequence length is 0k. For calculating metrics of different max seq lengths, specify additional lengths using the metadata parameter:
 >   `--metadata '{"config_name":"0k,1k,2k,4k"}'`. The metadata parameter can also be passed to the TaskManager (metadata: dict).
 
 
