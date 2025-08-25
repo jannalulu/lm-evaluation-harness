@@ -1,7 +1,7 @@
 include: _babilong_common_yaml
 task: babilong_qa16
 test_split: qa16
-custom_dataset: !function common_utils.load_dataset
+dataset_name: 0k
 description: "I will give you context with the facts about animals, their names and colors. The facts and a question are hidden in some random text. You need to answer the question based only on the information from the facts.\nYour answer should contain only one word - a color. Do not write anything else after that.\nDo not explain your answer.\n\n"
 doc_to_text: "{{input.strip()}}\n{{question.strip()}}"
 
