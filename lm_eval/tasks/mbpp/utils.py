@@ -1,4 +1,6 @@
+import os
 import re
+from pathlib import Path
 from typing import Union
 
 import evaluate as hf_evaluate
@@ -48,6 +50,33 @@ def build_predictions(resps: list[list[str]], docs: list[dict]) -> list[list[str
     return [[extract_code_blocks(r) for r in resp] for resp in resps]
 
 
+def attach_txt_to_prompt(dataset):
+    """Process documents to attach the txt file content to the prompt."""
+    # Get the path to the txt file relative to this utils.py file
+    current_dir = Path(__file__).parent
+    txt_file_path = current_dir / "programming_context_500.txt"
+
+    # Read the txt file content
+    try:
+        with open(txt_file_path, "r", encoding="utf-8") as f:
+            txt_content = f.read().strip()
+    except FileNotFoundError:
+        txt_content = "Additional context file not found."
+
+    def add_txt_to_example(example):
+        # Create a new prompt that includes the txt content
+        original_prompt = f"You are an expert Python programmer, and here's some context and a task:\n{txt_content}\n\nHere is your task: {example['text']} Your code should pass these tests:\n\n{example['test_list'][0]}\n{example['test_list'][1]}\n{example['test_list'][2]}\n[BEGIN]\n"
+
+        # Attach the txt content to the prompt
+        prompt_with_txt = f"{original_prompt}"
+
+        # Add the modified prompt to the example
+        example["prompt_with_txt"] = prompt_with_txt
+        return example
+
+    return dataset.map(add_txt_to_example)
+
+
 def list_fewshot_samples():
     return [
         {
@@ -60,6 +89,7 @@ def list_fewshot_samples():
                 "assert similar_elements((11, 12, 14, 13),(17, 15, 14, 13)) == (13, 14)",
             ],
             "is_fewshot": True,
+            "prompt_with_txt": "Here is your task: Write a function to find the similar elements from the given two tuple lists. Your code should pass these tests:\n\nassert similar_elements((3, 4, 5, 6),(5, 7, 4, 10)) == (4, 5)\nassert similar_elements((1, 2, 3, 4),(5, 4, 3, 7)) == (3, 4)\nassert similar_elements((11, 12, 14, 13),(17, 15, 14, 13)) == (13, 14)\n[BEGIN]\n",
         },
         {
             "task_id": 3,
@@ -71,6 +101,7 @@ def list_fewshot_samples():
                 "assert is_not_prime(35) == True",
             ],
             "is_fewshot": True,
+            "prompt_with_txt": "Here is your task: Write a python function to identify non-prime numbers. Your code should pass these tests:\n\nassert is_not_prime(2) == False\nassert is_not_prime(10) == True\nassert is_not_prime(35) == True\n[BEGIN]\n",
         },
         {
             "task_id": 4,
@@ -82,5 +113,6 @@ def list_fewshot_samples():
                 "assert heap_queue_largest( [25, 35, 22, 85, 14, 65, 75, 22, 58],5)==[85, 75, 65, 58, 35]",
             ],
             "is_fewshot": True,
+            "prompt_with_txt": "Here is your task: Write a function to find the largest integers from a given list of numbers using heap queue algorithm. Your code should pass these tests:\n\nassert heap_queue_largest( [25, 35, 22, 85, 14, 65, 75, 22, 58],3)==[85, 75, 65] \nassert heap_queue_largest( [25, 35, 22, 85, 14, 65, 75, 22, 58],2)==[85, 75] \nassert heap_queue_largest( [25, 35, 22, 85, 14, 65, 75, 22, 58],5)==[85, 75, 65, 58, 35]\n[BEGIN]\n",
         },
     ]
