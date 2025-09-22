@@ -54,7 +54,7 @@ def attach_txt_to_prompt(dataset):
     """Process documents to attach the txt file content to the prompt."""
     # Get the path to the txt file relative to this utils.py file
     current_dir = Path(__file__).parent
-    txt_file_path = current_dir / "programming_context_500.txt"
+    txt_file_path = current_dir / "programming_context_64k.txt"
 
     # Read the txt file content
     try:
