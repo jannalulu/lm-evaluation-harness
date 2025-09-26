@@ -54,7 +54,7 @@ def attach_txt_to_prompt(dataset):
     """Process documents to attach the txt file content to the prompt."""
     # Get the path to the txt file relative to this utils.py file
     current_dir = Path(__file__).parent
-    txt_file_path = current_dir / "programming_context_64k.txt"
+    txt_file_path = current_dir / "programming_context_256k.txt"
 
     # Read the txt file content
     try:
@@ -72,6 +72,41 @@ def attach_txt_to_prompt(dataset):
 
         # Add the modified prompt to the example
         example["prompt_with_txt"] = prompt_with_txt
+        return example
+
+    return dataset.map(add_txt_to_example)
+
+
+def attach_txt_to_prompt_insert(dataset):
+    """Process documents to insert the task in the middle of the txt file content."""
+    # Get the path to the txt file relative to this utils.py file
+    current_dir = Path(__file__).parent
+    txt_file_path = current_dir / "programming_context_1M.txt"
+
+    # Read the txt file content
+    try:
+        with open(txt_file_path, "r", encoding="utf-8") as f:
+            txt_content = f.read().strip()
+    except FileNotFoundError:
+        txt_content = "Additional context file not found."
+
+    # Split the txt content roughly in the middle
+    lines = txt_content.split('\n')
+    mid_point = len(lines) // 2
+    first_half = '\n'.join(lines[:mid_point])
+    second_half = '\n'.join(lines[mid_point:])
+
+    def add_txt_to_example(example):
+        # Only add txt content if prompt_with_txt is not already set (i.e., not fewshot)
+        if "prompt_with_txt" not in example:
+            # Create the task section to insert
+            task_section = f"\n\nYou are an expert Python programmer. Here is your task: {example['text']} Your code should pass these tests:\n\n{example['test_list'][0]}\n{example['test_list'][1]}\n{example['test_list'][2]}\n\n"
+
+            # Insert the task in the middle of the txt content
+            original_prompt = f"{first_half}{task_section}{second_half}\n[BEGIN]\n"
+
+            # Add the modified prompt to the example
+            example["prompt_with_txt"] = original_prompt
         return example
 
     return dataset.map(add_txt_to_example)
