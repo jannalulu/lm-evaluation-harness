@@ -7,7 +7,7 @@ MBPP Long-Context combines coding problems from the [MBPP dataset](https://githu
 ### Tasks
 This benchmark uses the 500 questions from the MBPP test set, prepended with long-context fields from babilong.
 
-[!NOTE]
+> [!NOTE]
 > When using mbpp_longcontext tasks, please note:
 > 1. The default maximum sequence length is 0k. For calculating metrics of different max seq lengths, specify additional lengths using the metadata parameter:
 >   `--metadata '{"max_seq_lengths":"0k,1k,2k,4k,8k,16k,32k,64k,128k,196k,256k,512k,1M"}'`. The config currently only takes one context length at a time. The metadata parameter can also be passed to the TaskManager (metadata: dict).
