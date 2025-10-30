@@ -9,4 +9,10 @@ OpenAI MRCR (Multi-round co-reference resolution) is a long context dataset for 
 ### Citation
 
 ```
+@misc{openai2024mrcr,
+  title={OpenAI MRCR: Long context multiple needle in a haystack benchmark},
+  author={OpenAI},
+  year={2024},
+  url={https://huggingface.co/datasets/openai/mrcr}
+}
 ```
