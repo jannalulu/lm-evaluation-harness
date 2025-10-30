@@ -1,0 +1,6 @@
+tag:
+  - mrcr
+include: _mrcr_common.yaml
+task: mrcr_2
+dataset_name: 2needle
+custom_dataset: !function utils.load_mrcr_2needle
