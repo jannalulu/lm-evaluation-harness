@@ -1,0 +1,15 @@
+dataset_path: openai/mrcr
+output_type: generate_until
+doc_to_text: !function utils.doc_to_text
+doc_to_target: answer
+process_results: !function utils.process_results
+generation_kwargs:
+  max_gen_toks: 4096
+  do_sample: false
+  until: []
+metric_list:
+  - metric: mrcr_score
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 0.0
