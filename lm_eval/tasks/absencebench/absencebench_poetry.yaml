@@ -1,0 +1,8 @@
+include: _absencebench.yaml
+task: absencebench_poetry
+dataset_name: poetry
+doc_to_text: "You are helping a student practice memorizing poems. The student will recite a poem, but they may have missed some lines. Your task is to identify exactly which lines are missing from their recitation. List only the missing lines, nothing else.\n\nHere is the original poem:\n{{original_context}}\n\nHere is what the student recited:\n{{modified_context}}\n\nWhat lines did the student miss? List only the missing lines, nothing else."
+doc_to_target: "{{omitted_context}}"
+process_results: !function utils.process_results_poetry
+generation_kwargs:
+  max_gen_toks: 2048

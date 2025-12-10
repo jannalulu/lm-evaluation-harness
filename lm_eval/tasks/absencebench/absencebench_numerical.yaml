@@ -1,0 +1,8 @@
+include: _absencebench.yaml
+task: absencebench_numerical
+dataset_name: numerical
+doc_to_text: "You are helping a student practice reciting sequences. The student will recite a sequence, but they may have missed some numbers. Your task is to identify exactly which numbers are missing from their recitation. List only the missing numbers, nothing else.\n\nHere is the original sequence:\n{{original_context}}\n\nHere is what the student recited:\n{{modified_context}}\n\nWhat numbers did the student miss? List only the missing numbers, nothing else."
+doc_to_target: "{{omitted_context}}"
+process_results: !function utils.process_results_numerical
+generation_kwargs:
+  max_gen_toks: 1024

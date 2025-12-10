@@ -1,0 +1,8 @@
+include: _absencebench.yaml
+task: absencebench_code
+dataset_name: github_prs
+doc_to_text: "You are helping a software developer determine if their merge of a pull request was successful. The developer started with a complete diff, but after fixing the commit history, some changes may have been lost. Your job is to figure out if they have missed any insertions or deletions.\n\nHere is the complete original diff:\n{{original_context}}\n\nHere is the merge diff after the developer fixed the commit history:\n{{modified_context}}\n\nWhat changed lines (insertions or deletions) present in the original diff are missing in the merge diff (if any)? List only the missing changed lines, nothing else."
+doc_to_target: "{{omitted_context}}"
+process_results: !function utils.process_results_code
+generation_kwargs:
+  max_gen_toks: 2048
